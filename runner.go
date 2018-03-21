@@ -20,6 +20,7 @@ import (
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/go-multierror"
 	"github.com/pkg/errors"
+	"sort"
 )
 
 // Regexp for invalid characters in keys
@@ -309,6 +310,13 @@ func (r *Runner) replicate(prefix *PrefixConfig, excludes *ExcludeConfigs, doneC
 	// Update keys to the most recent versions
 	updates := 0
 	usedKeys := make(map[string]struct{}, len(pairs))
+
+	if config.BoolVal(r.config.ReplicateByModifyIndexOrder) {
+		sort.Slice(pairs, func(i, j int) bool {
+			return pairs[i].ModifyIndex < pairs[j].ModifyIndex
+		})
+	}
+
 	for _, pair := range pairs {
 		key := config.StringVal(prefix.Destination) +
 			strings.TrimPrefix(pair.Path, config.StringVal(prefix.Source))

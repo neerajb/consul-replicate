@@ -35,6 +35,9 @@ const (
 
 	// DefaultStatusDir is the default directory to post status information.
 	DefaultStatusDir = "service/consul-replicate/statuses"
+
+	// DefaultReplicateByModifyIndexOrder is the default for replicating by modifyIndex order
+	DefaultReplicateByModifyIndexOrder = false
 )
 
 // Config is used to configure Consul ENV
@@ -74,6 +77,9 @@ type Config struct {
 
 	// Wait is the quiescence timers.
 	Wait *config.WaitConfig `mapstructure:"wait"`
+
+	// ReplicateByModifyIndexOrder is the replication order. Lexicographical is the default
+	ReplicateByModifyIndexOrder *bool `mapstructure:"replicate_by_modify_index_order"`
 }
 
 // Copy returns a deep copy of the current configuration. This is useful because
@@ -112,6 +118,8 @@ func (c *Config) Copy() *Config {
 	if c.Wait != nil {
 		o.Wait = c.Wait.Copy()
 	}
+
+	o.ReplicateByModifyIndexOrder = c.ReplicateByModifyIndexOrder
 
 	return &o
 }
@@ -174,6 +182,10 @@ func (c *Config) Merge(o *Config) *Config {
 		r.Wait = r.Wait.Merge(o.Wait)
 	}
 
+	if o.ReplicateByModifyIndexOrder != nil {
+		r.ReplicateByModifyIndexOrder = o.ReplicateByModifyIndexOrder
+	}
+
 	return r
 }
 
@@ -195,6 +207,7 @@ func (c *Config) GoString() string {
 		"StatusDir:%s, "+
 		"Syslog:%s, "+
 		"Wait:%s"+
+		"ReplicateByModifyIndexOrder:%s"+
 		"}",
 		c.Consul.GoString(),
 		c.Excludes.GoString(),
@@ -207,6 +220,7 @@ func (c *Config) GoString() string {
 		config.StringGoString(c.StatusDir),
 		c.Syslog.GoString(),
 		c.Wait.GoString(),
+		config.BoolGoString(c.ReplicateByModifyIndexOrder),
 	)
 }
 
@@ -282,6 +296,10 @@ func (c *Config) Finalize() {
 
 	if c.Wait == nil {
 		c.Wait = config.DefaultWaitConfig()
+	}
+
+	if c.ReplicateByModifyIndexOrder == nil {
+		c.ReplicateByModifyIndexOrder = config.Bool(DefaultReplicateByModifyIndexOrder)
 	}
 	c.Wait.Finalize()
 }
