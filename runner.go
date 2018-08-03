@@ -14,13 +14,14 @@ import (
 
 	"strings"
 
+	"sort"
+
 	"github.com/hashicorp/consul-template/config"
 	dep "github.com/hashicorp/consul-template/dependency"
 	"github.com/hashicorp/consul-template/watch"
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/go-multierror"
 	"github.com/pkg/errors"
-	"sort"
 )
 
 // Regexp for invalid characters in keys
@@ -120,9 +121,12 @@ func (r *Runner) Start() {
 	}
 
 	for {
+		log.Printf("[INFO] (runner) starting replication run")
+		start := time.Now()
 		select {
 		case view := <-r.watcher.DataCh():
 			r.Receive(view)
+			log.Printf("[INFO] (runner) watch time %d", time.Since(start))
 
 			// Drain all views that have data
 		OUTER:
@@ -171,6 +175,8 @@ func (r *Runner) Start() {
 			r.DoneCh <- struct{}{}
 			return
 		}
+		log.Printf("[INFO] (runner) replication run ends")
+		log.Printf("[INFO] (runner) time taken for replication %d", time.Since(start))
 	}
 }
 
@@ -266,6 +272,10 @@ func (r *Runner) get(prefix *PrefixConfig) (*watch.View, bool) {
 	return result, ok
 }
 
+func getDecodedTs(ts uint64) uint64 {
+	return ts & 0x00000000FFFFFFFF
+}
+
 // replicate performs replication into the current datacenter from the given
 // prefix. This function is designed to be called via a goroutine since it is
 // expensive and needs to be parallelized.
@@ -316,8 +326,13 @@ func (r *Runner) replicate(prefix *PrefixConfig, excludes *ExcludeConfigs, doneC
 			return pairs[i].ModifyIndex < pairs[j].ModifyIndex
 		})
 	}
-
+	var sizeRead uint64
+	var sizeWritten uint64
+	updateStart := time.Now()
+	var highestTs uint64
+	var highestTsKey string
 	for _, pair := range pairs {
+		sizeRead = sizeRead + uint64(len(pair.Value))
 		key := config.StringVal(prefix.Destination) +
 			strings.TrimPrefix(pair.Path, config.StringVal(prefix.Source))
 		usedKeys[key] = struct{}{}
@@ -371,10 +386,24 @@ func (r *Runner) replicate(prefix *PrefixConfig, excludes *ExcludeConfigs, doneC
 			errCh <- fmt.Errorf("failed to write %q: %s", key, err)
 			return
 		}
+		ts := getDecodedTs(pair.Flags)
+		if ts == 0 {
+			log.Printf("[DEBUG] Found key %s with 0 ts", key)
+		} else if ts > highestTs {
+			highestTs = ts
+			highestTsKey = key
+		}
+		sizeWritten = sizeWritten + uint64(len(pair.Value))
 		log.Printf("[DEBUG] (runner) updated key %q", key)
 		updates++
 	}
+	if highestTs > 0 {
+		log.Printf("[DEBUG] Key %s carried highest ts %d", highestTsKey, highestTs)
+		log.Printf("[INFO] (runner) replication lag %d", uint64(time.Now().Unix())-highestTs)
+	}
+	log.Printf("[INFO] (runner) total data read %d", sizeRead)
 
+	lookupStart := time.Now()
 	// Handle deletes
 	deletes := 0
 	localKeys, _, err := kv.Keys(config.StringVal(prefix.Destination), "", nil)
@@ -382,6 +411,7 @@ func (r *Runner) replicate(prefix *PrefixConfig, excludes *ExcludeConfigs, doneC
 		errCh <- fmt.Errorf("failed to list keys: %s", err)
 		return
 	}
+	log.Printf("[INFO] (runner) local lookup time %d", time.Since(lookupStart))
 	for _, key := range localKeys {
 		excluded := false
 
@@ -418,7 +448,11 @@ func (r *Runner) replicate(prefix *PrefixConfig, excludes *ExcludeConfigs, doneC
 
 	if updates > 0 || deletes > 0 {
 		log.Printf("[INFO] (runner) replicated %d updates, %d deletes", updates, deletes)
+		log.Printf("[INFO] (runner) total data update %d", sizeWritten)
 	}
+	defer func() {
+		log.Printf("[INFO] (runner) total update time %d", time.Since(updateStart))
+	}()
 
 	// We are done!
 	doneCh <- struct{}{}
